@@ -1,24 +1,61 @@
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from db import save_lead, get_all_leads, clear_old_data
 from config import ADMIN_ID
 
 router = Router()
-# ID администратора (твой Telegram ID можно узнать через @userinfobot)
+
+class LeadStates(StatesGroup):
+    AWAITING_NAME = State()
+    AWAITING_PHONE = State()
+    AWAITING_COMMENT = State()
 
 @router.message(Command("start"))
-async def start(message: Message):
+async def start(message: Message, state: FSMContext):
+    await state.set_state(LeadStates.AWAITING_NAME)
     await message.answer(
-        "👋 Привет! Я бот для приёма заявок.\n"
-        "Отправь мне сообщение в формате:\n\n"
-        "Имя\nТелефон\nКомментарий (необязательно)"
+        "👋 Привет! Я бот для приёма заявок.\n\n"
+        "Введите ваше имя:"
     )
 
+@router.message(LeadStates.AWAITING_NAME)
+async def process_name(message: Message, state: FSMContext):
+    name = message.text.strip()
+    await state.update_data(name=name)
+    await state.set_state(LeadStates.AWAITING_PHONE)
+    await message.answer("📱 Отлично! Теперь введите ваш телефон:")
 
+@router.message(LeadStates.AWAITING_PHONE)
+async def process_phone(message: Message, state: FSMContext):
+    phone = message.text.strip()
+    await state.update_data(phone=phone)
+    await state.set_state(LeadStates.AWAITING_COMMENT)
+    await message.answer("💬 Теперь введите комментарий (или '-' если без комментария):")
+
+@router.message(LeadStates.AWAITING_COMMENT)
+async def process_comment(message: Message, state: FSMContext):
+    comment = message.text.strip() if message.text.strip() != "-" else "-"
+    user_data = await state.get_data()
+
+    # Сохраняем заявку
+    save_lead(user_data['name'], user_data['phone'], comment)
+
+    await message.answer(
+        f"✅ Заявка принята!\n\n"
+        f"👤 Имя: {user_data['name']}\n"
+        f"📱 Телефон: {user_data['phone']}\n"
+        f"💬 Комментарий: {comment}\n\n"
+        f"Скоро с вами свяжутся!"
+    )
+
+    await state.clear()
+
+# Админские команды остаются без изменений
 @router.message(Command("showdb"))
 async def show_db(message: Message):
-    """Команда для проверки содержимого базы (только админ)."""
     if int(message.from_user.id) != int(ADMIN_ID):
         await message.answer("⛔ У тебя нет доступа к этой команде.")
         return
@@ -39,24 +76,5 @@ async def clear_db(message: Message):
         await message.answer("⛔ Нет доступа.")
         return
 
-    from db import clear_old_data
     count = clear_old_data(days=30)
     await message.answer(f"🧹 Удалено {count} заявок старше 30 дней.")
-
-
-
-@router.message(F.text)
-async def handle_message(message: Message):
-    text = message.text.strip()
-    parts = text.split("\n")
-
-    if len(parts) < 2:
-        await message.answer("⚠️ Нужно минимум имя и телефон.\nПример:\n\nИван\n+49123456789\nХочу консультацию")
-        return
-
-    name = parts[0]
-    phone = parts[1]
-    msg = "\n".join(parts[2:]) if len(parts) > 2 else "-"
-
-    save_lead(name, phone, msg)
-    await message.answer("✅ Заявка записана! Менеджер свяжется с тобой.")
